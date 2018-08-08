@@ -1,0 +1,250 @@
+---
+title: "Biking in the Rain"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+###################################################################################################
+## Installs any missing packages -- barring system constraints ( will not fix binary dependencies )
+###################################################################################################
+installMissingPackages <- function(package_name) {
+  if (! (package_name %in% rownames(installed.packages())) ) {
+    install.packages(package_name, repos="http://cran.rstudio.com/")
+  }
+}
+
+#################################################
+## Loads all required packages in a package list
+################################################
+loadRequiredPackages <- function(list) {
+  for (package in list) {
+    installMissingPackages(package)
+    library(package, character.only=TRUE)
+  }
+}
+
+packages <- c('jsonlite', 'sqldf','dplyr', 'glue', 'bigrquery', 'DBI', 'lubridate', 'ggmap')
+
+loadRequiredPackages(packages)
+```
+
+## Summer Bicycle Commuting -- Weather Dependent? 
+
+As I enjoyed my cool, rainy bike ride to Statistics class I wondered to myself if other people feel the same way. Is your average commuter cyclist a fair-weather rider, or do they throw on a rain coat and go ride through the puddles? I realized I may be able to answer my question when I passed the Capitol City Eco-Totem, which counts bike traffic in both directions on the path.  
+
+### Data Qualifications
+
+If I am to answer whether or not bicycle commuters were resilient to the precipitation, I wanted to subset for a few environmental variables.  
+
+- Subset for months when school wasn't in session (July, August).
+- Subset for months that had reasonably good weather throughout (July, August).
+- Subset for days where folks typically work (M-F).
+
+This led me to selecting the months of July and August when the majority of college students had left town, and the weather was typically good. 
+
+### Data Sources
+Dane County has 2 bike path counters which are operated by an organization called eco-public. From scraping the JSON that feeds their website, I was able to get two dataframes which include a date, and count for total bikes that crossed the counter. I combined these two dataframes into one. 
+
+I sourced my weather data from the NOAA station located at the Dane County Regional Airport. I selected years 2015 - 2018.
+ 
+### Bike Path Counters and Location
+http://www.eco-public.com/public2/?id=100020865  
+http://www.eco-public.com/public2/?id=100016754
+
+```{r locate_bike_paths, warning=FALSE, echo=FALSE}
+eco_totems <- data.frame(lat=c(43.067913,43.06741), lon=c(-89.41238,-89.38508))
+map <- get_googlemap("madison wisconsin", zoom = 14, maptype='terrain')
+p <- ggmap(map)
+p + geom_point(data=eco_totems, aes(x=lon, y=lat),size=5, col=I("blueviolet"))
+```
+
+```{r get_data, warning=FALSE, echo=FALSE}
+# Set query date as yesterday
+# query_date <- gsub("-", "", (Sys.Date()-2))
+
+query_date <- "20180806"
+
+# Gather Bike Path Data
+# The Capitol City Path didn't begin counting until June 2015. We want to start our analysis is May. So we'll do May 2015 onwards until today
+southwest_path <- fromJSON(glue::glue("http://www.eco-public.com/api/cw6Xk4jW4X4R/data/periode/100016754?begin=20150630&end={query_date}&step=4"))
+capitol_city <- fromJSON(glue::glue("http://www.eco-public.com/api/cw6Xk4jW4X4R/data/periode/100020865?begin=20150630&end={query_date}&step=4"))
+
+# Only use May thru October
+southwest_path <- southwest_path %>% 
+                    select(date,comptage) %>% 
+                    filter(month(date) %in% c(07,08))
+# race condition where we receive a duplicate on 2016-10-30 that is null
+southwest_path <- na.omit(southwest_path)
+
+capitol_city <- capitol_city %>% 
+                    select(date,comptage) %>% 
+                    filter(month(date) %in% c(07,08))
+# race condition where we receive a duplicate on 2016-10-30 that is null
+capitol_city <- na.omit(capitol_city)
+
+bike_path_counts <- sqldf("select southwest_path.date, SUM(southwest_path.comptage + capitol_city.comptage) AS count from southwest_path join capitol_city ON southwest_path.date = capitol_city.date GROUP BY southwest_path.date")
+
+# race condition where we receive a duplicate on 2016-10-30 that is null
+
+# BigQuery connection
+# billing <- 'passive-capture'
+# 
+# con <- dbConnect(
+#   bigrquery::bigquery(),
+#   project = "bigquery-public-data",
+#   dataset = "noaa_gsod",
+#   billing = billing
+# )
+# con
+
+## BigQuery SQLdb
+# SELECT 
+#   PARSE_TIMESTAMP('%Y-%m-%d',CONCAT(gsod.year, '-', gsod.mo, '-', gsod.da)) AS date,
+#   temp,
+#   max AS temp_max,
+#   min AS temp_min,
+#   prcp
+# FROM 
+# `bigquery-public-data.noaa_gsod.gsod201*` gsod
+# JOIN `bigquery-public-data.noaa_gsod.stations` stations
+# ON gsod.stn=stations.usaf
+# AND gsod.wban=stations.wban
+# WHERE state = 'WI'
+# AND EXTRACT(MONTH FROM PARSE_TIMESTAMP('%Y-%m-%d',CONCAT(gsod.year, '-', gsod.mo, '-', gsod.da))) > 6
+# AND EXTRACT(MONTH FROM PARSE_TIMESTAMP('%Y-%m-%d',CONCAT(gsod.year, '-', gsod.mo, '-', gsod.da))) < 9
+# AND stations.name = 'DANE CO REGIONAL-TRUAX FIELD'
+# AND _TABLE_SUFFIX BETWEEN '5' and '8'
+# ORDER BY date;
+
+# sql_query <- glue::glue("SELECT PARSE_TIMESTAMP('%Y-%m-%d',CONCAT(gsod.year, '-', gsod.mo, '-', gsod.da)) AS date, temp, max AS temp_max, min AS temp_min, prcp FROM `bigquery-public-data.noaa_gsod.gsod201*` gsod JOIN `bigquery-public-data.noaa_gsod.stations` stations ON gsod.stn=stations.usaf AND gsod.wban=stations.wban WHERE state = 'WI' AND EXTRACT(MONTH FROM PARSE_TIMESTAMP('%Y-%m-%d',CONCAT(gsod.year, '-', gsod.mo, '-', gsod.da))) > 6 AND EXTRACT(MONTH FROM PARSE_TIMESTAMP('%Y-%m-%d',CONCAT(gsod.year, '-', gsod.mo, '-', gsod.da))) < 9 AND stations.name = 'DANE CO REGIONAL-TRUAX FIELD' AND _TABLE_SUFFIX BETWEEN '5' and '8' ORDER BY date;")
+# 
+# weather_data <- dbGetQuery(con, sql_query)
+
+weather_data <- read.csv('weather_data.csv')
+
+bike_path_counts$date <- as.Date(bike_path_counts$date)
+weather_data$date <- as.Date(weather_data$date)
+
+
+df <- merge(bike_path_counts,weather_data)
+
+df <- df %>%
+        select(date,count,temp,temp_min,temp_max,prcp) %>% 
+        filter(!wday(date) %in% c(1, 7))
+```
+<br/>
+**Data Used for Analysis:**  
+```{r head_datum, echo=FALSE}
+print(head(df))
+```  
+### Question  
+Is there a statistically significant relationship between the number of Madison commuters counted on our bike paths relative to the amount of precipitation on a given weekday in July & August?  
+
+**Hø:** There is no relationship between precipitation and commuter counts  
+
+**Hₐ:** There is a relationship between precipitation and commuter counts   
+### Assumptions
+First step is to visualize our populations and determine whether we have a large enough sample, and whether our sample population is normally distributed.  
+```{r normal_plots, echo=FALSE}
+par(mfrow=c(2,2))
+qqnorm(southwest_path$comptage, main='Q-Q Plot for SW Path Counts')
+qqnorm(capitol_city$comptage, main='Q-Q Plot for CC Path Counts')
+qqnorm(df$count, main='Q-Q Plot for Total Bike Counts')
+qqnorm(df$prcp, main='Q-Q Plot for Precipitation')
+```
+
+In light of the Q-Q plots that were generated from our data, we can assume normal distributions for all of the bike count data -- however it looks like our precipitation sample is not normal as it is left skewed.  
+
+During my exploration, it was also apparent that there is a very high variance in daily commuter numbers for our 158 observations.   
+
+**s = 987.17**  
+```{r variance_in_commuters, echo=FALSE}
+plot(df$count,col = 1 + (df$prcp > 0), ylim=c(0,7000), main='High Variance in Commuters', ylab='Commuter Count', xlab='By Day')
+abline(h=mean(df$count))
+text(10, 200+mean(df$count), "x̅", col = "black")
+text(25,100, glue::glue("s = {sd(df$count)}"))
+```
+
+This high variance is also represented in each individual bike path counter, so I will assume this variance is not due to a faulty operation of one of the path counters. Or perhaps long term construction that had one of the counters offline.      
+<br/>
+**s(capitol_city) = 665.70**  
+**s(southwest_path) = 441.26**
+
+```{r similar_variance_in_individual_locations, echo=FALSE}
+par(mfrow=c(1,2))
+plot(capitol_city$comptage,col = 1 + (df$prcp > 0), ylim=c(0,5000), main='Capitol City Commuters', ylab='Commuter Count', xlab='By Day')
+abline(h=mean(capitol_city$comptage))
+text(15, 200+mean(capitol_city$comptage), "x̅", col = "black")
+
+plot(southwest_path$comptage,col = 1 + (df$prcp > 0), ylim=c(0,5000), main='Southwest Path Commuters', ylab='Commuter Count', xlab='By Day')
+abline(h=mean(southwest_path$comptage))
+text(15, 200+mean(southwest_path$comptage), "x̅", col = "black")
+```
+
+### Regression
+
+With the awareness that my precipitation distribution is not normal on account of the majority of data points being 0, I'm going to do a quick regression anyways -- mostly for fun. 
+
+```{r linear_regression_on_bp_v_prcp}
+summary(lm(df$count~df$prcp))
+```
+
+```{r show_linear_model, echo=FALSE}
+plot(x=df$prcp, y=df$count, ylim=c(0,7000), main='Regression Line', ylab='Biker Count', xlab='Precipitation')
+abline(lm(df$count~df$prcp), col='blueviolet')
+```
+
+### Results
+In light of our regression analysis, it appears there is a statistically significant relationship between commuter counts and precipitation on any given day in July or August. 
+<br/>
+**p = .00125**
+<br/>
+Since our p-value is less than .05, we could cautiously consider rejecting **Hø**, however since our precipitation data was not from a normal population I can't fully support this significance. It is interesting nonetheless, and gret exploration.  
+
+### T-Test
+Since our precipiation sample is not distributed normally and our ridership counts are, this is the perfect example to subset the commuter counts data into two sets (precipitation/non-precipitation) and perform a Welch's T-Test. This should enable us to determine a relationship between the mean commuter counts on rainy days versus non rainy days. I have subsetted the data into two groups, with one being 49 counts on days of precipitation, and the other being 49 counts on days of no precipitation.  
+```{r reformat_data, echo=FALSE}
+rain_counts <- df %>%
+                 select(count, prcp) %>%
+                 filter(prcp > 0)
+non_rain <- counts <- df %>%
+                     select(count, prcp) %>%
+                     filter(prcp == 0) %>%
+                     slice(1:49)
+```
+### Question  
+Is there a statistically significant relationship between the number of Madison commuters counted on our bike paths relative to the amount of precipitation on a given weekday in July & August?  
+
+**Hø:** μ(commuter_counts_with_precip) - μ(commuter_counts_no_precip) = 0  
+
+**Hₐ:** μ(commuter_counts_with_precip) - μ(commuter_counts_no_precip) ≠ 0   
+```{r visualize_t}
+boxplot(non_rain$count, rain_counts$count, ylim=c(0,7000),names=c("No Precip","Precip"), col=c('blanchedalmond','aquamarine3'), ylab='Commuter Count')
+```
+<br/>
+### Assumptions
+Let's examine the Q-Q plots of these data and see if we have normal distributions. 
+
+```{r t_test_qq, echo=FALSE}
+qqnorm(non_rain$count, main='Q-Q Plot for Non-Precip')
+qqnorm(rain_counts$count, main='Q-Q Plot for Precip')
+```
+
+In light of the Q-Q plots, it appears that both our Precip/Non-Precip samples come from normal populations to which we can perform a T-test on.  
+
+### Welch T-Test
+Now we can perform our Welch T-Test:
+```{r t_test, echo=FALSE}
+t.test(rain_counts$count,non_rain$count)
+```
+
+### Results
+With a p-value < .05, we can reject **Hø**. The data are strong evidence that the population mean commuter counts are different on days of precipitation v. days of no precipitation. 
+
+### Additional Questions
+- Perform the same test for commuter countage during the academic year -- are college students more likely to ride in the rain? Do they have a choice? 
+- Look at other variables such as temperature and wind speed.   
+<br/>
+<br/>
+<br/>
