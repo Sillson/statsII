@@ -231,15 +231,30 @@ qqnorm(non_rain$count, main='Q-Q Plot for Non-Precip')
 qqnorm(rain_counts$count, main='Q-Q Plot for Precip')
 ```
 
-In light of the Q-Q plots, it appears that both our Precip/Non-Precip samples come from normal populations to which we can perform a T-test on.  
+In light of the Q-Q plots, it appears that both our Precip/Non-Precip samples come from normal populations to which we can perform a T-test on. 
+
+```{r density_plots}
+plot(density(non_rain$count), col='blanchedalmond', xlim=c(0,7000), main='Density Curves for Commuter Counts Based on Precip')
+lines(density(rain_counts$count), col='aquamarine3')
+abline(v=mean(non_rain$count), col='tan')
+abline(v=mean(rain_counts$count), col='aquamarine2')
+```
+
+<br/>
+By visualizing this graph it would be hard to tell if there's a significiant difference between the two curves as both populations have roughly the same count as their highest density. By visualizing their means, we can see how each population is swayed in either direction. 
 
 ### Welch T-Test
 Now we can perform our Welch T-Test:
+
+
 ```{r t_test, echo=FALSE}
 t.test(rain_counts$count,non_rain$count)
 ```
 
 ### Results
+
+**p-value = 0.003434**  
+<br/>
 With a p-value < .05, we can reject **Hø**. The data are strong evidence that the population mean commuter counts are different on days of precipitation v. days of no precipitation. 
 
 ### Additional Questions
